@@ -5,6 +5,14 @@ require 'date'
 include StockQuote::Utility
 
 module StockQuote
+
+  mattr_accessor :oauth
+  @@oauth = {}
+
+  def self.setup
+    yield self
+  end
+
   # => SecQuote::NoDataForStockError
   # Is returned for 404s and ErrorIndicationreturnedforsymbolchangedinvalid
   class NoDataForStockError < StandardError
@@ -39,6 +47,7 @@ module StockQuote
     end
 
     def initialize(data)
+
       if data['ErrorIndicationreturnedforsymbolchangedinvalid']
         @no_data_message = data['ErrorIndicationreturnedforsymbolchangedinvalid']
         @response_code = 404
@@ -67,23 +76,67 @@ module StockQuote
     end
 
     def self.quote(symbol, start_date = nil, end_date = nil, select = '*', format = 'instance')
+      
+
       url = 'https://query.yahooapis.com/v1/public/yql?q='
       select = format_select(select)
+
       if start_date && end_date
         url += URI.encode("SELECT #{ select } FROM yahoo.finance.historicaldata WHERE symbol IN (#{to_p(symbol)}) AND startDate = '#{start_date}' AND endDate = '#{end_date}'")
       else
         url += URI.encode("SELECT #{ select } FROM yahoo.finance.quotes WHERE symbol IN (#{to_p(symbol)})")
       end
+
       url += '&format=json&diagnostics=true&env=store%3A%2F%2Fdatatables.org%2Falltableswithkeys&callback='
 
-      RestClient.get(url) do |response|
-        if response.code == 200
-          parse(response, symbol, format)
+      begin
+
+        response_obj  = nil
+        response_body = nil
+
+        if !StockQuote.oauth.nil? && !StockQuote.oauth.empty? then
+          
+          begin
+            require 'oauth'
+          rescue LoadError 
+            raise 'Oauth gem must be installed if you wish to use Oauth authentication'
+          end
+ 
+          consumer      = OAuth::Consumer.new(StockQuote.oauth[:key], StockQuote.oauth[:secret], :site => 'https://query.yahooapis.com')
+          access_token  = OAuth::AccessToken.new(consumer)
+          response_obj  = access_token.request(:get, url)
+
+          if response_obj.respond_to?('body') then
+            response_body = response_obj.body
+          end
+        
+        else
+
+          response_obj  = RestClient.get(url)
+          response_body = response_obj.to_str
+
+        end
+
+        if !response_obj.nil? && response_obj.respond_to?('body') && response_obj.code.to_i == 200
+          parse(response_body, symbol, format)
         else
           warn "[BAD REQUEST] #{ url }"
           NoDataForStockError.new
         end
+
+      rescue Exception => e
+
+          e_msg = 'request error: ' + e.message
+
+          if e.respond_to?('response.body') then
+            e_msg += ' ' + oae.response.body  
+          end
+          
+          warn e_msg
+          NoDataForStockError.new
+
       end
+
     end
 
     def self.json_quote(symbol, start_date = nil, end_date = nil, select = '*', format = 'json')
